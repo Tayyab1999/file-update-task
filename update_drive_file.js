@@ -40,7 +40,7 @@ async function updateExcelFile(filePath, sheetName, updates) {
             return false;
         }
 
-        // Find ASIN column and row (case-insensitive)
+        // Find ASIN column and row
         let asinCol = -1;
         let headerRow = -1;
         const asinVariations = ['ASIN','Asins'];
@@ -79,32 +79,35 @@ async function updateExcelFile(filePath, sheetName, updates) {
         // Log available columns for debugging
         console.log('\nAvailable columns in sheet:', Object.values(headerValues));
 
-        // Find the row with matching ASIN
-        let targetRow = -1;
-        const range = worksheet.usedRange();
-        const maxRow = range.endCell().rowNumber();
-        
-        for (let row = headerRow + 1; row <= maxRow; row++) {
-            const cellValue = worksheet.cell(row, asinCol).value();
-            if (cellValue && cellValue.toString().trim().toUpperCase() === updates.asin.toUpperCase()) {
-                targetRow = row;
-                break;
+        // Process each ASIN's updates
+        for (const asinUpdate of updates) {
+            const { asin, ...fieldUpdates } = asinUpdate;
+
+            // Find the row with matching ASIN
+            let targetRow = -1;
+            const range = worksheet.usedRange();
+            const maxRow = range.endCell().rowNumber();
+            
+            for (let row = headerRow + 1; row <= maxRow; row++) {
+                const cellValue = worksheet.cell(row, asinCol).value();
+                if (cellValue && cellValue.toString().trim().toUpperCase() === asin.toUpperCase()) {
+                    targetRow = row;
+                    break;
+                }
             }
-        }
 
-        if (targetRow === -1) {
-            console.error(`ASIN ${updates.asin} not found in the sheet`);
-            return false;
-        }
+            if (targetRow === -1) {
+                console.error(`\nASIN ${asin} not found in the sheet`);
+                continue; // Skip to next ASIN
+            }
 
-        console.log(`\nFound ASIN ${updates.asin} at row ${targetRow}`);
+            console.log(`\nFound ASIN ${asin} at row ${targetRow}`);
 
-        // Update only the values that exist in the sheet
-        let updatedFields = [];
-        let skippedFields = [];
-        
-        Object.entries(updates).forEach(([field, value]) => {
-            if (field.toLowerCase() !== 'asin') {
+            // Update only the values that exist in the sheet
+            let updatedFields = [];
+            let skippedFields = [];
+            
+            Object.entries(fieldUpdates).forEach(([field, value]) => {
                 // Try to find the column case-insensitively
                 const upperField = field.toUpperCase();
                 if (colIndices[upperField] !== undefined) {
@@ -113,14 +116,14 @@ async function updateExcelFile(filePath, sheetName, updates) {
                 } else {
                     skippedFields.push(field);
                 }
-            }
-        });
+            });
 
-        if (updatedFields.length > 0) {
-            console.log('\nUpdated fields:', updatedFields.join(', '));
-        }
-        if (skippedFields.length > 0) {
-            console.log('\nSkipped fields (not found in sheet):', skippedFields.join(', '));
+            if (updatedFields.length > 0) {
+                console.log('Updated fields:', updatedFields.join(', '));
+            }
+            if (skippedFields.length > 0) {
+                console.log('Skipped fields (not found in sheet):', skippedFields.join(', '));
+            }
         }
 
         // Save the workbook
@@ -139,26 +142,54 @@ async function main() {
     const fileId = '11xfaf0nGgscOpYpE9U3tfRelyCxsDoOJ';
     const excelFile = 'ICERWORKSHEET.xlsx';
 
-    // Example updates for different sheets
+    // Example updates for different sheets with multiple ASINs
     const updates = {
-        'AMS NFL': {
-            asin: 'B084TRRKBY',
-            'FBA INV': 8,
-            'OTS QOH': 1,
-            'QOHQTY': 456,
-            'AMZ VC INV': 789,
-            'WIP QTY': 10,
-            'WIP ETA': '2024-07-01'
-        },
-        'AMS NBA': {
-            asin: 'B01LZZHGGM',
-            'AMZ VC INV': 200
-        },
-        'AMS WNBA per Size': {
-            asin: 'B0DPJDRKKD',
-            'DF INV': 6,
-            'AMZ VC': 150
-        }
+        'AMS NFL': [
+            {
+                asin: 'B084TRRKBY',
+                'FBA INV': 8,
+                'OTS QOH': 1,
+                'QOHQTY': 456,
+                'AMZ VC INV': 789,
+                'WIP QTY': 10,
+                'WIP ETA': '2024-07-01'
+            },
+            {
+                asin: 'B07F2KGLF5',
+                'FBA INV': 15,
+                'OTS QOH': 3,
+                'QOHQTY': 200
+            },
+            {
+                asin: 'B07NQXX591',
+                'FBA INV': 25,
+                'AMZ VC INV': 150,
+                'WIP QTY': 5
+            }
+        ],
+        'AMS NBA': [
+            {
+                asin: 'B01LZZHGGM',
+                'AMZ VC INV': 400,
+                'OTSQOH': 90
+            },
+            {
+                asin: 'B01LYCRHJN',
+                'AMZ VC INV': 500
+            }
+        ],
+        'AMS WNBA per Size': [
+            {
+                asin: 'B0DPJDRKKD',
+                'DF INV': 6,
+                'AMZ VC INV': 150
+            },
+            {
+                asin: 'B0DPJF1VBN',
+                'DF INV': 12,
+                'AMZ VC INV': 100
+            }
+        ]
     };
 
     // Download the file first
