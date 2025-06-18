@@ -3,6 +3,74 @@ const XLSXPopulate = require('xlsx-populate');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { google } = require('googleapis');
+const readline = require('readline');
+
+// Load credentials from file
+const credentials = JSON.parse(fs.readFileSync('client_secret.json'));
+
+const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+const TOKEN_PATH = 'token.json';
+
+// Create an OAuth2 client
+function getOAuth2Client() {
+    return new google.auth.OAuth2(
+        credentials.installed.client_id,
+        credentials.installed.client_secret,
+        'urn:ietf:wg:oauth:2.0:oob'
+    );
+}
+
+// Get and store new token after prompting for user authorization
+async function getNewToken(oAuth2Client) {
+    const authUrl = oAuth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: SCOPES,
+    });
+    console.log('Authorize this app by visiting this url:', authUrl);
+    console.log('\nAfter authorizing, you will see a code on the page. Copy that code and paste it here.');
+
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+    });
+
+    return new Promise((resolve, reject) => {
+        rl.question('Enter the code from that page here: ', async (code) => {
+            rl.close();
+            try {
+                const { tokens } = await oAuth2Client.getToken(code);
+                oAuth2Client.setCredentials(tokens);
+                // Store the token to disk for later program executions
+                fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
+                console.log('Token stored to', TOKEN_PATH);
+                resolve(oAuth2Client);
+            } catch (err) {
+                reject('Error retrieving access token: ' + err);
+            }
+        });
+    });
+}
+
+// Create Google Drive client with OAuth2 authentication
+async function createDriveClient() {
+    const oAuth2Client = getOAuth2Client();
+
+    try {
+        // Check if we have previously stored a token
+        if (fs.existsSync(TOKEN_PATH)) {
+            const token = JSON.parse(fs.readFileSync(TOKEN_PATH));
+            oAuth2Client.setCredentials(token);
+        } else {
+            // If no token, get a new one
+            await getNewToken(oAuth2Client);
+        }
+        return google.drive({ version: 'v3', auth: oAuth2Client });
+    } catch (error) {
+        console.error('Error creating drive client:', error);
+        throw error;
+    }
+}
 
 async function downloadFile(fileId, destination) {
     try {
@@ -137,72 +205,94 @@ async function updateExcelFile(filePath, sheetName, updates) {
     }
 }
 
-// Example usage:
+// Helper: Find file by name in Google Drive
+async function findFileIdByName(fileName) {
+    const drive = await createDriveClient();
+    const res = await drive.files.list({
+        q: `name='${fileName.replace(/'/g, "\\'")}' and trashed=false`,
+        fields: 'files(id, name)',
+        spaces: 'drive',
+        pageSize: 1
+    });
+    if (res.data.files && res.data.files.length > 0) {
+        return res.data.files[0].id;
+    }
+    return null;
+}
+
+// Function to upload file to Google Drive
+async function uploadToDrive(filePath, fileId = null) {
+    try {
+        const drive = await createDriveClient();
+        const fileMetadata = {
+            name: path.basename(filePath)
+        };
+        const media = {
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            body: fs.createReadStream(filePath)
+        };
+
+        let response;
+        if (fileId) {
+            // Update existing file
+            response = await drive.files.update({
+                fileId: fileId,
+                resource: fileMetadata,
+                media: media,
+                fields: 'id'
+            });
+            console.log('File updated successfully:', response.data.id);
+        } else {
+            // Create new file
+            response = await drive.files.create({
+                resource: fileMetadata,
+                media: media,
+                fields: 'id'
+            });
+            console.log('New file created successfully:', response.data.id);
+        }
+        return response.data.id;
+    } catch (error) {
+        console.error('Error uploading file to Drive:', error.message);
+        throw error;
+    }
+}
+
 async function main() {
-    const fileId = '11xfaf0nGgscOpYpE9U3tfRelyCxsDoOJ';
     const excelFile = 'ICERWORKSHEET.xlsx';
 
-    // Example updates for different sheets with multiple ASINs
     const updates = {
-        'AMS NFL': [
-            {
-                asin: 'B084TRRKBY',
-                'FBA INV': 8,
-                'OTS QOH': 1,
-                'QOHQTY': 456,
-                'AMZ VC INV': 789,
-                'WIP QTY': 10,
-                'WIP ETA': '2024-07-01'
-            },
-            {
-                asin: 'B07F2KGLF5',
-                'FBA INV': 15,
-                'OTS QOH': 3,
-                'QOHQTY': 200
-            },
-            {
-                asin: 'B07NQXX591',
-                'FBA INV': 25,
-                'AMZ VC INV': 150,
-                'WIP QTY': 5
-            }
-        ],
         'AMS NBA': [
             {
                 asin: 'B01LZZHGGM',
                 'AMZ VC INV': 400,
                 'OTSQOH': 90
-            },
-            {
-                asin: 'B01LYCRHJN',
-                'AMZ VC INV': 500
-            }
-        ],
-        'AMS WNBA per Size': [
-            {
-                asin: 'B0DPJDRKKD',
-                'DF INV': 6,
-                'AMZ VC INV': 150
-            },
-            {
-                asin: 'B0DPJF1VBN',
-                'DF INV': 12,
-                'AMZ VC INV': 100
             }
         ]
     };
 
-    // Download the file first
-    const downloaded = await downloadFile(fileId, excelFile);
-    if (!downloaded) {
-        console.error('Failed to download file');
-        return;
-    }
+    try {
+        // Update each sheet
+        for (const [sheetName, sheetUpdates] of Object.entries(updates)) {
+            console.log(`\n=== Processing sheet: ${sheetName} ===`);
+            await updateExcelFile(excelFile, sheetName, sheetUpdates);
+        }
 
-    // Update each sheet
-    for (const [sheetName, sheetUpdates] of Object.entries(updates)) {
-        console.log(`\n=== Processing sheet: ${sheetName} ===`);
-        await updateExcelFile(excelFile, sheetName, sheetUpdates);
+        try {
+            // Find file by name in Drive
+            const fileId = await findFileIdByName(excelFile);
+            if (fileId) {
+                console.log('File already exists in Drive. Updating...');
+                await uploadToDrive(excelFile, fileId);
+            } else {
+                console.log('File not found in Drive. Creating new file...');
+                await uploadToDrive(excelFile);
+            }
+        } catch (error) {
+            console.error('Failed to upload file to Drive:', error.message);
+        }
+    } catch (error) {
+        console.error('Error in main:', error.message);
     }
 }
 
@@ -214,5 +304,6 @@ if (require.main === module) {
 // Export functions for use as a module
 module.exports = {
     downloadFile,
-    updateExcelFile
+    updateExcelFile,
+    uploadToDrive
 }; 
